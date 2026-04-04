@@ -16,10 +16,111 @@ const domains = [
   { id: 8, name: "Software Development Security" },
 ]
 
+// ─── LoginScreen Component ────────────────────────────────────────────────────
+// APPSEC: This is the authentication gate. Right now if you bypass this
+// component client-side (e.g. by editing state in React DevTools), you can
+// still access the domain picker. Real protection must live on the server.
+function LoginScreen({ onLogin }) {
+  const [email, setEmail] = useState("")
+  const [password, setPassword] = useState("")
+  const [error, setError] = useState("")
+  const [loading, setLoading] = useState(false)
+
+  async function handleSubmit(e) {
+    e.preventDefault()
+    setLoading(true)
+    setError("")
+
+    try {
+      // APPSEC: We POST credentials to our FastAPI backend.
+      // In production this MUST be HTTPS — plain HTTP lets anyone on the
+      // network intercept credentials (man-in-the-middle attack).
+      const res = await fetch("http://127.0.0.1:8000/login", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ email, password }),
+      })
+
+      const data = await res.json()
+
+      if (!res.ok) {
+        // APPSEC: Our backend already returns a safe vague message.
+        // Never show raw server errors — they can leak stack traces.
+        setError(data.detail || "Login failed")
+        return
+      }
+
+      // APPSEC: Storing the token in localStorage is INSECURE.
+      // localStorage is readable by any JS on the page, including XSS scripts.
+      // The secure alternative is an httpOnly cookie — we'll fix this in Phase 3.
+      localStorage.setItem("token", data.access_token)
+      onLogin(data.access_token)
+
+    } catch (err) {
+      // APPSEC: Show a generic message — never expose internal error details.
+      setError("Could not reach the server. Is the API running?")
+    } finally {
+      setLoading(false)
+    }
+  }
+
+  return (
+    <div className="min-h-screen bg-gray-950 flex items-center justify-center p-8">
+      <div className="w-full max-w-md">
+        <div className="text-center mb-8">
+          <h1 className="text-4xl font-bold text-blue-400 mb-2">🛡️ CyberSabi</h1>
+          <p className="text-gray-400">Sign in to start studying</p>
+        </div>
+
+        <form onSubmit={handleSubmit} className="bg-gray-900 border border-gray-700 rounded-xl p-8 flex flex-col gap-4">
+          <div>
+            <label className="text-gray-300 text-sm font-medium block mb-1">Email</label>
+            <input
+              type="email"
+              value={email}
+              onChange={e => setEmail(e.target.value)}
+              placeholder="student@cybersabi.app"
+              required
+              className="w-full px-4 py-2 rounded-lg bg-gray-800 border border-gray-600 text-white placeholder-gray-500 focus:outline-none focus:border-blue-500"
+            />
+          </div>
+
+          <div>
+            <label className="text-gray-300 text-sm font-medium block mb-1">Password</label>
+            <input
+              type="password"
+              value={password}
+              onChange={e => setPassword(e.target.value)}
+              placeholder="••••••••"
+              required
+              className="w-full px-4 py-2 rounded-lg bg-gray-800 border border-gray-600 text-white placeholder-gray-500 focus:outline-none focus:border-blue-500"
+            />
+          </div>
+
+          {error && (
+            <p className="text-red-400 text-sm">{error}</p>
+          )}
+
+          <button
+            type="submit"
+            disabled={loading}
+            className="w-full py-2 rounded-lg bg-blue-600 hover:bg-blue-500 disabled:opacity-40 text-white font-medium transition-colors"
+          >
+            {loading ? "Signing in..." : "Sign in"}
+          </button>
+
+          <p className="text-gray-500 text-xs text-center">
+            Demo: student@cybersabi.app / password123
+          </p>
+        </form>
+      </div>
+    </div>
+  )
+}
+
 // ─── DomainPicker Component ───────────────────────────────────────────────────
-// APPSEC: This is a "presentational" component — it only displays data and fires events.
-// It has no idea what happens when a card is clicked. That logic lives in the parent (App).
-// This separation is good security design: each piece does one thing and nothing more.
+// APPSEC: Presentational component — displays data and fires events only.
+// No logic about what happens when clicked — that lives in the parent (App).
 function DomainPicker({ onSelect }) {
   return (
     <div className="min-h-screen bg-gray-950 text-white p-8">
@@ -27,14 +128,12 @@ function DomainPicker({ onSelect }) {
         <h1 className="text-4xl font-bold text-blue-400 mb-2">🛡️ CyberSabi</h1>
         <p className="text-gray-400">Your CISSP study platform. Built by a SWE, for security engineers.</p>
       </div>
-
       <div className="max-w-4xl mx-auto">
         <h2 className="text-xl font-semibold text-gray-200 mb-4">Choose a domain to study</h2>
         <div className="grid grid-cols-2 gap-4">
           {domains.map((domain) => (
-            // APPSEC: onClick passes the full domain object up to the parent via onSelect.
-            // In a real app, you'd pass only the domain ID, then fetch the full object
-            // from the server — never trust the client to send unmodified data.
+            // APPSEC: onClick passes the domain object to the parent.
+            // In production, pass only the ID and fetch the full object server-side.
             <div
               key={domain.id}
               onClick={() => onSelect(domain)}
@@ -52,45 +151,23 @@ function DomainPicker({ onSelect }) {
 
 // ─── StudyScreen Component ────────────────────────────────────────────────────
 function StudyScreen({ domain, onBack }) {
-  // APPSEC: useState tracks which question index the user is on.
-  // This state only lives in the browser (client-side). If someone refreshes,
-  // they lose their progress — that's why real apps persist state to a database.
   const [currentIndex, setCurrentIndex] = useState(0)
-
-  // APPSEC: useState tracks what the user selected. Notice we store the index (a number),
-  // not the full answer string. Storing minimal data reduces exposure if state is inspected.
   const [selected, setSelected] = useState(null)
-
-  // APPSEC: tracks whether the answer has been revealed.
-  // In a real exam app, the correct answer must NEVER be sent to the browser before
-  // the user submits — otherwise anyone can read it from the network tab. We'll fix
-  // this when we add the FastAPI backend.
   const [revealed, setRevealed] = useState(false)
 
-  // Filter questions for this domain only
-  // APPSEC: .filter() on the client is fine for a static dataset.
-  // In production, this filtering happens on the server via a SQL WHERE clause —
-  // you never send all 80 questions to the browser just to filter to 10.
   const domainQuestions = questions.filter(q => q.domain === domain.id)
-
   const current = domainQuestions[currentIndex]
   const isLast = currentIndex === domainQuestions.length - 1
 
   function handleSelect(index) {
-    // APPSEC: Only allow selection before the answer is revealed.
-    // This prevents changing your answer after seeing the correct one.
-    // On a real exam backend, the server would reject any answer submitted
-    // after the reveal endpoint was already called.
     if (!revealed) setSelected(index)
   }
 
   function handleReveal() {
-    // Only reveal if user has selected an answer
     if (selected !== null) setRevealed(true)
   }
 
   function handleNext() {
-    // Reset state for the next question
     setSelected(null)
     setRevealed(false)
     setCurrentIndex(i => i + 1)
@@ -99,50 +176,26 @@ function StudyScreen({ domain, onBack }) {
   return (
     <div className="min-h-screen bg-gray-950 text-white p-8">
       <div className="max-w-2xl mx-auto">
-
-        {/* Back button */}
-        <button
-          onClick={onBack}
-          className="text-blue-400 hover:text-blue-300 mb-8 flex items-center gap-2"
-        >
+        <button onClick={onBack} className="text-blue-400 hover:text-blue-300 mb-8 flex items-center gap-2">
           ← Back to domains
         </button>
 
-        {/* Domain header */}
         <span className="text-blue-400 font-bold text-sm">Domain {domain.id}</span>
         <h1 className="text-3xl font-bold text-white mt-1 mb-2">{domain.name}</h1>
+        <p className="text-gray-500 text-sm mb-6">Question {currentIndex + 1} of {domainQuestions.length}</p>
 
-        {/* Progress indicator */}
-        {/* APPSEC: Showing progress (x of y) is good UX, but also reveals how many
-            questions exist. In a real adaptive exam, you don't reveal total count. */}
-        <p className="text-gray-500 text-sm mb-6">
-          Question {currentIndex + 1} of {domainQuestions.length}
-        </p>
-
-        {/* Question card */}
         <div className="bg-gray-900 border border-gray-700 rounded-xl p-6">
           <p className="text-white text-lg font-medium mb-6">{current.question}</p>
 
-          {/* Answer options */}
           <div className="grid grid-cols-1 gap-3">
             {current.options.map((option, i) => {
-
-              // APPSEC: We determine the visual style of each button based on state.
-              // Notice we never expose `current.correct` in the DOM until revealed === true.
-              // A determined attacker can still read it from the JS bundle — which is why
-              // the correct answer must come from the server after submission in production.
               let style = "border-gray-700 text-gray-300 hover:border-blue-500 hover:bg-gray-800"
-
               if (revealed) {
-                if (i === current.correct) {
-                  style = "border-green-500 bg-green-900/30 text-green-300" // correct answer
-                } else if (i === selected) {
-                  style = "border-red-500 bg-red-900/30 text-red-300"       // wrong selection
-                }
+                if (i === current.correct) style = "border-green-500 bg-green-900/30 text-green-300"
+                else if (i === selected) style = "border-red-500 bg-red-900/30 text-red-300"
               } else if (i === selected) {
-                style = "border-blue-500 bg-blue-900/30 text-blue-300"      // currently selected
+                style = "border-blue-500 bg-blue-900/30 text-blue-300"
               }
-
               return (
                 <button
                   key={i}
@@ -155,7 +208,6 @@ function StudyScreen({ domain, onBack }) {
             })}
           </div>
 
-          {/* Reveal / Next button */}
           <div className="mt-6 flex gap-3">
             {!revealed ? (
               <button
@@ -166,45 +218,31 @@ function StudyScreen({ domain, onBack }) {
                 Check answer
               </button>
             ) : (
-              // APPSEC: The explanation only renders AFTER the answer is revealed.
-              // This pattern — "reveal on demand" — is used in real exam platforms
-              // to prevent users from reading explanations before answering.
               !isLast && (
-                <button
-                  onClick={handleNext}
-                  className="px-6 py-2 rounded-lg bg-blue-600 hover:bg-blue-500 text-white font-medium transition-colors"
-                >
+                <button onClick={handleNext} className="px-6 py-2 rounded-lg bg-blue-600 hover:bg-blue-500 text-white font-medium transition-colors">
                   Next question →
                 </button>
               )
             )}
           </div>
 
-          {/* Explanation — only shown after reveal */}
           {revealed && (
             <div className="mt-6 p-4 bg-gray-800 border border-gray-600 rounded-lg">
               <p className="text-blue-400 font-semibold text-sm mb-1">Explanation</p>
-              {/* APPSEC: We render text content using JSX, not dangerouslySetInnerHTML.
-                  Never inject raw HTML strings from a database into the DOM — that's
-                  a stored XSS vulnerability. Always render as plain text. */}
+              {/* APPSEC: Render as plain text, never dangerouslySetInnerHTML — that's XSS */}
               <p className="text-gray-300 text-sm leading-relaxed">{current.explanation}</p>
             </div>
           )}
 
-          {/* Completion message */}
           {revealed && isLast && (
             <div className="mt-6 p-4 bg-green-900/30 border border-green-600 rounded-lg text-center">
               <p className="text-green-400 font-semibold">Domain complete!</p>
-              <button
-                onClick={onBack}
-                className="mt-3 px-6 py-2 rounded-lg bg-green-600 hover:bg-green-500 text-white font-medium transition-colors"
-              >
+              <button onClick={onBack} className="mt-3 px-6 py-2 rounded-lg bg-green-600 hover:bg-green-500 text-white font-medium transition-colors">
                 Back to domains
               </button>
             </div>
           )}
         </div>
-
       </div>
     </div>
   )
@@ -212,16 +250,18 @@ function StudyScreen({ domain, onBack }) {
 
 // ─── App (Root Component) ─────────────────────────────────────────────────────
 function App() {
-  // APPSEC: This is the top-level state for the entire app.
-  // Later, this is where we'll check if a user is authenticated before
-  // allowing access to the study content. Right now there's no auth —
-  // anyone can access everything. That's the vulnerability we'll fix in Phase 3.
+  // APPSEC: Check localStorage for an existing token on load.
+  // localStorage persists across refreshes but is vulnerable to XSS.
+  // We'll move to httpOnly cookies in Phase 3.
+  const [token, setToken] = useState(localStorage.getItem("token"))
   const [selectedDomain, setSelectedDomain] = useState(null)
 
-  // APPSEC: Conditional rendering based on state.
-  // This is client-side "access control" — which is NOT real security.
-  // Hiding a component doesn't protect the data behind it.
-  // Real access control lives on the server (we'll build that with FastAPI).
+  // APPSEC: Client-side auth check — NOT real security.
+  // This just hides the UI. The real check must happen on the server.
+  if (!token) {
+    return <LoginScreen onLogin={setToken} />
+  }
+
   if (selectedDomain) {
     return <StudyScreen domain={selectedDomain} onBack={() => setSelectedDomain(null)} />
   }
