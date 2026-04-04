@@ -1,4 +1,4 @@
-import { useState } from 'react'
+import { useState, useEffect } from 'react'
 
 // APPSEC: Importing data from a separate file keeps your data layer separate from your UI.
 // In a real app, this data comes from an API call to your backend — not hardcoded here.
@@ -27,42 +27,38 @@ function LoginScreen({ onLogin }) {
   const [loading, setLoading] = useState(false)
 
   async function handleSubmit(e) {
-    e.preventDefault()
-    setLoading(true)
-    setError("")
+  e.preventDefault()
+  setLoading(true)
+  setError("")
 
-    try {
-      // APPSEC: We POST credentials to our FastAPI backend.
-      // In production this MUST be HTTPS — plain HTTP lets anyone on the
-      // network intercept credentials (man-in-the-middle attack).
-      const res = await fetch("http://127.0.0.1:8000/login", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ email, password }),
-      })
+  try {
+    const res = await fetch("http://127.0.0.1:8000/login", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      // APPSEC: credentials:"include" tells the browser to send and receive
+      // cookies on cross-origin requests. Required for httpOnly cookies to work.
+      credentials: "include",
+      body: JSON.stringify({ email, password }),
+    })
 
-      const data = await res.json()
+    const data = await res.json()
 
-      if (!res.ok) {
-        // APPSEC: Our backend already returns a safe vague message.
-        // Never show raw server errors — they can leak stack traces.
-        setError(data.detail || "Login failed")
-        return
-      }
-
-      // APPSEC: Storing the token in localStorage is INSECURE.
-      // localStorage is readable by any JS on the page, including XSS scripts.
-      // The secure alternative is an httpOnly cookie — we'll fix this in Phase 3.
-      localStorage.setItem("token", data.access_token)
-      onLogin(data.access_token)
-
-    } catch (err) {
-      // APPSEC: Show a generic message — never expose internal error details.
-      setError("Could not reach the server. Is the API running?")
-    } finally {
-      setLoading(false)
+    if (!res.ok) {
+      setError(data.detail || "Login failed")
+      return
     }
+
+    // APPSEC: We no longer store anything in localStorage.
+    // The httpOnly cookie was set automatically by the server response.
+    // We just tell React the user is logged in.
+    onLogin()
+
+  } catch (err) {
+    setError("Could not reach the server. Is the API running?")
+  } finally {
+    setLoading(false)
   }
+}
 
   return (
     <div className="min-h-screen bg-gray-950 flex items-center justify-center p-8">
@@ -250,16 +246,40 @@ function StudyScreen({ domain, onBack }) {
 
 // ─── App (Root Component) ─────────────────────────────────────────────────────
 function App() {
-  // APPSEC: Check localStorage for an existing token on load.
-  // localStorage persists across refreshes but is vulnerable to XSS.
-  // We'll move to httpOnly cookies in Phase 3.
-  const [token, setToken] = useState(localStorage.getItem("token"))
+  // null = still checking, false = not logged in, true = logged in
+  const [loggedIn, setLoggedIn] = useState(null)
   const [selectedDomain, setSelectedDomain] = useState(null)
 
-  // APPSEC: Client-side auth check — NOT real security.
-  // This just hides the UI. The real check must happen on the server.
-  if (!token) {
-    return <LoginScreen onLogin={setToken} />
+  // APPSEC: useEffect runs once on mount — before the user sees anything.
+  // We call /me to check if the httpOnly cookie is still valid.
+  // This is the secure way to restore session state on refresh.
+  // credentials:"include" tells the browser to send the cookie cross-origin.
+  useEffect(() => {
+    fetch("http://127.0.0.1:8000/me", {
+      credentials: "include",
+    })
+      .then(res => {
+        // APPSEC: 200 = valid cookie, user is logged in
+        // 401 = no cookie or expired, send to login screen
+        setLoggedIn(res.ok)
+      })
+      .catch(() => {
+        // Network error — assume not logged in
+        setLoggedIn(false)
+      })
+  }, []) // empty array = run once on load only
+
+  // Still checking — show nothing to avoid a flash of the login screen
+  if (loggedIn === null) {
+    return (
+      <div className="min-h-screen bg-gray-950 flex items-center justify-center">
+        <p className="text-gray-500">Loading...</p>
+      </div>
+    )
+  }
+
+  if (!loggedIn) {
+    return <LoginScreen onLogin={() => setLoggedIn(true)} />
   }
 
   if (selectedDomain) {
