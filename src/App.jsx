@@ -5,6 +5,20 @@ import { useState, useEffect } from 'react'
 // AppSec lesson: never trust data that comes from the client. Always validate on the server too.
 import { questions } from './questions.js'
 
+// ─── CSRF helper ──────────────────────────────────────────────────────────────
+// APPSEC: Fetch a fresh CSRF token from the server on app load.
+// The server sets it as a readable cookie AND returns it in the response body.
+// We store it in React state and send it as X-CSRF-Token on every POST request.
+// Browsers block cross-site requests from setting custom headers —
+// so an attacker on evil.com cannot forge this header even if they know the endpoint.
+async function fetchCsrfToken() {
+  const res = await fetch("http://127.0.0.1:8000/csrf-token", {
+    credentials: "include",
+  })
+  const data = await res.json()
+  return data.csrf_token
+}
+
 const domains = [
   { id: 1, name: "Security & Risk Management" },
   { id: 2, name: "Asset Security" },
@@ -20,45 +34,51 @@ const domains = [
 // APPSEC: This is the authentication gate. Right now if you bypass this
 // component client-side (e.g. by editing state in React DevTools), you can
 // still access the domain picker. Real protection must live on the server.
-function LoginScreen({ onLogin }) {
+function LoginScreen({ onLogin, csrfToken }) {
   const [email, setEmail] = useState("")
   const [password, setPassword] = useState("")
-  const [error, setError] = useState("")
   const [loading, setLoading] = useState(false)
+  const [error, setError] = useState("")
 
   async function handleSubmit(e) {
-  e.preventDefault()
-  setLoading(true)
-  setError("")
+    e.preventDefault()
+    setLoading(true)
+    setError("")
 
-  try {
-    const res = await fetch("http://127.0.0.1:8000/login", {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      // APPSEC: credentials:"include" tells the browser to send and receive
-      // cookies on cross-origin requests. Required for httpOnly cookies to work.
-      credentials: "include",
-      body: JSON.stringify({ email, password }),
-    })
+    try {
+      const res = await fetch("http://127.0.0.1:8000/login", {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          // APPSEC: Send the CSRF token as a custom header.
+          // Browsers enforce CORS on cross-origin requests — an attacker on evil.com
+          // cannot set custom headers, so they can't include this token.
+          // The double-submit pattern works because only your own JS can read
+          // the csrf_token cookie and include it here.
+          "X-CSRF-Token": csrfToken,
+        },
+        credentials: "include",
+        body: JSON.stringify({ email, password }),
+      })
 
-    const data = await res.json()
+      const data = await res.json()
 
-    if (!res.ok) {
-      setError(data.detail || "Login failed")
-      return
+      if (!res.ok) {
+        // APPSEC: Show the server's error message — it's already intentionally vague.
+        // Never expose raw server errors or stack traces.
+        setError(data.detail || "Login failed")
+        return
+      }
+
+      onLogin()
+
+    } catch (err) {
+      // APPSEC: Generic message — never expose internal error details.
+      setError("Could not reach the server. Is the API running?")
+    } finally {
+      setLoading(false)
     }
-
-    // APPSEC: We no longer store anything in localStorage.
-    // The httpOnly cookie was set automatically by the server response.
-    // We just tell React the user is logged in.
-    onLogin()
-
-  } catch (err) {
-    setError("Could not reach the server. Is the API running?")
-  } finally {
-    setLoading(false)
   }
-}
 
   return (
     <div className="min-h-screen bg-gray-950 flex items-center justify-center p-8">
@@ -249,27 +269,28 @@ function App() {
   // null = still checking, false = not logged in, true = logged in
   const [loggedIn, setLoggedIn] = useState(null)
   const [selectedDomain, setSelectedDomain] = useState(null)
+  // APPSEC: CSRF token stored in React state — not localStorage.
+  // It's fetched fresh on every app load and passed down to any component
+  // that makes state-changing requests.
+  const [csrfToken, setCsrfToken] = useState(null)
 
-  // APPSEC: useEffect runs once on mount — before the user sees anything.
-  // We call /me to check if the httpOnly cookie is still valid.
-  // This is the secure way to restore session state on refresh.
-  // credentials:"include" tells the browser to send the cookie cross-origin.
   useEffect(() => {
-    fetch("http://127.0.0.1:8000/me", {
-      credentials: "include",
+    // APPSEC: Fetch CSRF token and check auth session in parallel on app load.
+    // Both are needed before showing any UI — we wait for both to complete.
+    Promise.all([
+      fetchCsrfToken(),
+      fetch("http://127.0.0.1:8000/me", { credentials: "include" })
+    ]).then(([token, meRes]) => {
+      setCsrfToken(token)
+      // APPSEC: /me returning 200 means the httpOnly cookie is valid.
+      // We don't need to read the cookie ourselves — the server confirms it.
+      setLoggedIn(meRes.ok)
+    }).catch(() => {
+      setLoggedIn(false)
     })
-      .then(res => {
-        // APPSEC: 200 = valid cookie, user is logged in
-        // 401 = no cookie or expired, send to login screen
-        setLoggedIn(res.ok)
-      })
-      .catch(() => {
-        // Network error — assume not logged in
-        setLoggedIn(false)
-      })
-  }, []) // empty array = run once on load only
+  }, [])
 
-  // Still checking — show nothing to avoid a flash of the login screen
+  // Still loading — avoid flashing the login screen
   if (loggedIn === null) {
     return (
       <div className="min-h-screen bg-gray-950 flex items-center justify-center">
@@ -278,8 +299,11 @@ function App() {
     )
   }
 
+  // APPSEC: Client-side auth check — NOT real security.
+  // This just controls which component renders.
+  // Real access control lives on the server via the httpOnly cookie check.
   if (!loggedIn) {
-    return <LoginScreen onLogin={() => setLoggedIn(true)} />
+    return <LoginScreen onLogin={() => setLoggedIn(true)} csrfToken={csrfToken} />
   }
 
   if (selectedDomain) {
